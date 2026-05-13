@@ -3,7 +3,8 @@ title Materials Studio MCP Server
 setlocal enabledelayedexpansion
 
 set "DIR=%~dp0"
-set "VENV=%DIR%.venv"
+set "DIR=%DIR:~0,-1%"
+set "VENV=%DIR%\.venv"
 set "PY=python"
 
 echo ============================================

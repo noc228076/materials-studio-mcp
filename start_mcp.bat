@@ -42,10 +42,19 @@ if exist "%VENV%\Scripts\python.exe" (
 )
 
 echo [..] Installing deps...
-"%PY%" -m pip install -e "%DIR%" -q >nul 2>&1
+"%PY%" -m pip install --upgrade pip -q
+"%PY%" -m pip install setuptools wheel -q
+"%PY%" -m pip install mcp numpy pywin32
 if errorlevel 1 (
-    "%PY%" -m pip install mcp numpy pywin32 >nul 2>&1
-    "%PY%" -m pip install -e "%DIR%" >nul 2>&1
+    echo [ERROR] pip install failed
+    pause
+    exit /b 1
+)
+"%PY%" -m pip install -e "%DIR%"
+if errorlevel 1 (
+    echo [ERROR] Package install failed
+    pause
+    exit /b 1
 )
 echo [OK] Dependencies ready
 

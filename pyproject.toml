@@ -1,0 +1,20 @@
+[project]
+name = "materials-studio-mcp"
+version = "0.1.0"
+description = "MCP (Model Context Protocol) server for Materials Studio molecular modeling and simulation"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "numpy>=1.21.0",
+    "pywin32>=300",
+]
+
+[project.scripts]
+ms-mcp = "materials_studio_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

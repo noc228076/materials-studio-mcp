@@ -11,7 +11,8 @@
 推荐使用项目内 `.venv`，这样 Claude Code 等客户端不会受系统 Python 环境影响。
 
 ```powershell
-cd D:\APPS\AIMCP\materials-studio-mcp
+git clone https://github.com/noc228076/materials-studio-mcp.git
+cd materials-studio-mcp
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
@@ -21,12 +22,14 @@ python -m pip install -e .
 
 推荐配置如下。不需要写 Materials Studio 路径，也不需要配置 `env`。
 
+把 `<仓库目录>` 替换成你本机 clone 后的项目目录。
+
 ```json
 {
   "type": "stdio",
-  "command": "D:\\APPS\\AIMCP\\materials-studio-mcp\\.venv\\Scripts\\python.exe",
+  "command": "<仓库目录>\\.venv\\Scripts\\python.exe",
   "args": [
-    "D:\\APPS\\AIMCP\\materials-studio-mcp\\run_server.py"
+    "<仓库目录>\\run_server.py"
   ]
 }
 ```
@@ -34,8 +37,9 @@ python -m pip install -e .
 Claude Code 可用下面命令刷新用户级配置。
 
 ```powershell
+$repo = (Resolve-Path .).Path
 claude mcp remove material_studio_mcp_server -s user
-claude mcp add material_studio_mcp_server D:\APPS\AIMCP\materials-studio-mcp\.venv\Scripts\python.exe D:\APPS\AIMCP\materials-studio-mcp\run_server.py -s user
+claude mcp add material_studio_mcp_server "$repo\.venv\Scripts\python.exe" "$repo\run_server.py" -s user
 claude mcp list
 ```
 
@@ -63,15 +67,13 @@ Python。
 服务启动后会自动查找 Materials Studio 2020/20.1 的 `RunMatScript.bat`。常见路径包括：
 
 ```text
-D:\Program Files (x86)\BIOVIA\Materials Studio 20.1 x64 Server\etc\Scripting\bin\RunMatScript.bat
-C:\Program Files\BIOVIA\Materials Studio 2020\etc\Scripting\bin\RunMatScript.bat
-C:\Program Files (x86)\BIOVIA\Materials Studio 2020\etc\Scripting\bin\RunMatScript.bat
+<Materials Studio 安装目录>\etc\Scripting\bin\RunMatScript.bat
 ```
 
 通常不需要手写环境变量。只有自动探测失败时，才需要设置：
 
 ```powershell
-$env:MATERIAL_STUDIO_RUNNER = "D:\Program Files (x86)\BIOVIA\Materials Studio 20.1 x64 Server\etc\Scripting\bin\RunMatScript.bat"
+$env:MATERIAL_STUDIO_RUNNER = "<Materials Studio 安装目录>\etc\Scripting\bin\RunMatScript.bat"
 ```
 
 ## 5. 可用工具
@@ -94,7 +96,7 @@ TNT 示例：
 
 ```json
 {
-  "output_file": "D:\\Documents\\AI\\zscq\\ppt\\TNT_ms_generated_optimized.xsd",
+  "output_file": ".\\TNT_ms_generated_optimized.xsd",
   "optimize": true,
   "timeout_seconds": 180
 }

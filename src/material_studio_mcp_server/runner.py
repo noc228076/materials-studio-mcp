@@ -83,6 +83,9 @@ class MaterialStudioRunner:
             "install_home": str(self.config.install_home) if self.config.install_home else None,
             "workspace_root": str(self.config.workspace_root),
             "default_timeout_seconds": self.config.default_timeout_seconds,
+            "default_cores": self.config.default_cores,
+            "builtin_structures_path": str(self.config.builtin_structures_path) if self.config.builtin_structures_path else None,
+            "builtin_structures_available": bool(self.config.builtin_structures_path and self.config.builtin_structures_path.is_dir()),
             "extra_runner_args": list(self.config.extra_runner_args),
             "searched_candidates": [str(path) for path in runner_candidates()[:25]],
             "searched_candidate_count": len(runner_candidates()),
@@ -101,6 +104,8 @@ class MaterialStudioRunner:
         timeout_seconds: int | None = None,
         job_prefix: str = "msjob",
         keep_script_name: str = "script.pl",
+        num_cores: int | None = None,
+        project_mode: bool = False,
     ) -> ScriptRunResult:
         """Write a script to an isolated job directory and launch it."""
 
@@ -115,7 +120,13 @@ class MaterialStudioRunner:
         script_path = job_dir / keep_script_name
         script_path.write_text(script, encoding="utf-8")
 
-        command = self._build_command(runner, script_path, args or [])
+        command = self._build_command(
+            runner,
+            script_path,
+            args or [],
+            num_cores=num_cores,
+            project_mode=project_mode,
+        )
         timeout = timeout_seconds or self.config.default_timeout_seconds
         env = os.environ.copy()
         env.setdefault("MATERIAL_STUDIO_MCP_JOB_DIR", str(job_dir))
@@ -147,6 +158,14 @@ class MaterialStudioRunner:
         combined_output = "\n".join(part for part in (stdout, materials_output) if part)
         success = (not timed_out) and _materials_run_succeeded(return_code, materials_output, materials_log)
 
+        parsed_json = extract_tagged_json(combined_output)
+        extra_metrics = extract_simulation_metrics(combined_output, materials_log)
+        if extra_metrics:
+            if isinstance(parsed_json, dict):
+                parsed_json.setdefault("metrics", extra_metrics)
+            elif parsed_json is None:
+                parsed_json = {"metrics": extra_metrics}
+
         return ScriptRunResult(
             command=command,
             job_id=job_dir.name,
@@ -161,10 +180,18 @@ class MaterialStudioRunner:
             materials_log=_html_to_text(materials_log),
             success=success,
             timed_out=timed_out,
-            parsed_json=extract_tagged_json(combined_output),
+            parsed_json=parsed_json,
         )
 
-    def _build_command(self, runner: Path, script_path: Path, args: list[str]) -> list[str]:
+    def _build_command(
+        self,
+        runner: Path,
+        script_path: Path,
+        args: list[str],
+        *,
+        num_cores: int | None = None,
+        project_mode: bool = False,
+    ) -> list[str]:
         template = os.environ.get("MATERIAL_STUDIO_COMMAND_TEMPLATE")
         if template:
             mapping = {
@@ -176,8 +203,18 @@ class MaterialStudioRunner:
             command_line = template.format(**mapping)
             return _split_windows_args(command_line)
 
-        script_arg = script_path.stem if runner.name.lower() == "runmatscript.bat" else str(script_path)
-        command = [str(runner), *self.config.extra_runner_args, script_arg]
+        is_runmatscript = runner.name.lower() == "runmatscript.bat"
+        script_arg = script_path.stem if is_runmatscript else str(script_path)
+
+        options: list[str] = []
+        effective_cores = num_cores if num_cores is not None else self.config.default_cores
+        if is_runmatscript:
+            if effective_cores > 1:
+                options.extend(["-np", str(effective_cores)])
+            if project_mode:
+                options.append("-project")
+
+        command = [str(runner), *options, *self.config.extra_runner_args, script_arg]
         if args:
             command.append("--")
             command.extend(args)
@@ -211,6 +248,60 @@ def extract_tagged_json(output: str) -> Any | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {"parse_error": "Tagged JSON was not valid JSON.", "raw": raw}
+
+
+def extract_simulation_metrics(output: str = "", log_text: str = "") -> dict[str, Any]:
+    """Extract known computational chemistry metrics from MS log or stdout."""
+    metrics: dict[str, Any] = {}
+    combined = f"{output}\n{log_text}"
+
+    castep_energy = re.search(
+        r"Final\s+(?:free\s+)?energy(?:,\s*E)?\s*[:=]\s*([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)\s*eV",
+        combined,
+        re.IGNORECASE,
+    )
+    if castep_energy:
+        try:
+            metrics["castep_final_energy_ev"] = float(castep_energy.group(1))
+        except ValueError:
+            pass
+
+    castep_force = re.search(
+        r"Final\s+RMS\s+(?:force|gradient)\s*[:=]\s*([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)",
+        combined,
+        re.IGNORECASE,
+    )
+    if castep_force:
+        try:
+            metrics["castep_final_rms_force_ev_per_ang"] = float(castep_force.group(1))
+        except ValueError:
+            pass
+
+    forcite_energy = re.search(
+        r"Total\s+Energy\s*[:=]\s*([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)\s*(kcal/mol|kJ/mol|eV)?",
+        combined,
+        re.IGNORECASE,
+    )
+    if forcite_energy:
+        try:
+            metrics["forcite_total_energy"] = float(forcite_energy.group(1))
+            if forcite_energy.group(2):
+                metrics["forcite_energy_unit"] = forcite_energy.group(2)
+        except ValueError:
+            pass
+
+    rms_grad = re.search(
+        r"RMS\s+(?:Force|Gradient)\s*[:=]\s*([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)",
+        combined,
+        re.IGNORECASE,
+    )
+    if rms_grad and "castep_final_rms_force_ev_per_ang" not in metrics:
+        try:
+            metrics["rms_gradient"] = float(rms_grad.group(1))
+        except ValueError:
+            pass
+
+    return metrics
 
 
 def perl_string(value: str | Path) -> str:

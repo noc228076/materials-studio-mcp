@@ -41,3 +41,41 @@ def test_build_default_command_for_other_runner_uses_script_path(tmp_path: Path)
 def test_materials_log_failure_detection() -> None:
     assert not _materials_run_succeeded(0, "", "Completion status: (FAIL).")
     assert _materials_run_succeeded(0, "ok", "Completion status: (OK).")
+
+
+def test_build_command_with_np_cores(tmp_path: Path) -> None:
+    runner_path = tmp_path / "Program Files" / "BIOVIA" / "RunMatScript.bat"
+    script_path = tmp_path / "jobs" / "script.pl"
+    config = MaterialStudioConfig(
+        runner=runner_path,
+        workspace_root=tmp_path,
+        default_timeout_seconds=10,
+        install_home=None,
+        runner_source="test",
+        extra_runner_args=(),
+        default_cores=4,
+    )
+
+    runner = MaterialStudioRunner(config)
+    cmd = runner._build_command(runner_path, script_path, [], num_cores=8, project_mode=True)
+    assert "-np" in cmd
+    np_idx = cmd.index("-np")
+    assert cmd[np_idx + 1] == "8"
+    assert "-project" in cmd
+
+
+def test_extract_simulation_metrics() -> None:
+    from material_studio_mcp_server.runner import extract_simulation_metrics
+
+    sample_output = """
+    Writing model to my_model.xsd
+    BFGS: Final Energy     = -1.23456789E+003 eV
+    BFGS: Final RMS force  =  1.2345E-003 eV/A
+    Total Energy: -543.210 kcal/mol
+    Initial Energy: 100.0 kcal/mol
+    """
+    metrics = extract_simulation_metrics(sample_output)
+    assert metrics["castep_final_energy_ev"] == -1234.56789
+    assert metrics["castep_final_rms_force_ev_per_ang"] == 0.0012345
+    assert metrics["forcite_total_energy"] == -543.21
+

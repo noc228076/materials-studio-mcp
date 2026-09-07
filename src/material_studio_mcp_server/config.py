@@ -64,6 +64,8 @@ class MaterialStudioConfig:
     install_home: Path | None
     runner_source: str
     extra_runner_args: tuple[str, ...]
+    builtin_structures_path: Path | None = None
+    default_cores: int = 1
 
 
 def resolve_config(cwd: Path | None = None) -> MaterialStudioConfig:
@@ -75,6 +77,8 @@ def resolve_config(cwd: Path | None = None) -> MaterialStudioConfig:
     install_home = _resolve_install_home()
     runner, source = _resolve_runner(install_home)
     extra_runner_args = tuple(_split_windows_args(os.environ.get("MATERIAL_STUDIO_RUNNER_ARGS", "")))
+    builtin_structures = _resolve_builtin_structures(runner, install_home)
+    default_cores = _parse_cores(os.environ.get("MATERIAL_STUDIO_CORES"))
     return MaterialStudioConfig(
         runner=runner,
         workspace_root=workspace_root,
@@ -82,6 +86,8 @@ def resolve_config(cwd: Path | None = None) -> MaterialStudioConfig:
         install_home=install_home,
         runner_source=source,
         extra_runner_args=extra_runner_args,
+        builtin_structures_path=builtin_structures,
+        default_cores=default_cores,
     )
 
 
@@ -216,3 +222,55 @@ def _command_line_to_argv(raw: str) -> list[str]:
         return [argv[index] for index in range(argc.value)]
     finally:
         kernel32.LocalFree(argv)
+
+
+def _parse_cores(raw: str | None) -> int:
+    if not raw or not raw.strip():
+        return 1
+    try:
+        val = int(raw.strip())
+        return max(1, min(val, 256))
+    except ValueError:
+        return 1
+
+
+def _resolve_builtin_structures(runner: Path | None, install_home: Path | None) -> Path | None:
+    custom = os.environ.get("MATERIAL_STUDIO_STRUCTURES")
+    if custom and Path(custom).expanduser().is_dir():
+        return Path(custom).expanduser().resolve()
+
+    if install_home:
+        candidate = install_home / "share" / "Structures"
+        if candidate.is_dir():
+            return candidate.resolve()
+
+    if runner:
+        curr = runner.parent
+        for _ in range(5):
+            candidate = curr / "share" / "Structures"
+            if candidate.is_dir():
+                return candidate.resolve()
+            if curr.exists():
+                try:
+                    for sibling in curr.glob("Materials Studio*"):
+                        if sibling.is_dir() and (sibling / "share" / "Structures").is_dir():
+                            return (sibling / "share" / "Structures").resolve()
+                except OSError:
+                    pass
+            curr = curr.parent
+
+    for root in COMMON_INSTALL_ROOTS:
+        root_path = Path(root)
+        if root_path.is_dir():
+            try:
+                for home in root_path.glob("Materials Studio*"):
+                    candidate = home / "share" / "Structures"
+                    if candidate.is_dir():
+                        return candidate.resolve()
+            except OSError:
+                continue
+
+    return None
+
+
+config: MaterialStudioConfig = resolve_config()

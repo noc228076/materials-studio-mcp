@@ -6,15 +6,28 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
+from .config import config
 from .runner import MaterialStudioError, MaterialStudioRunner
 from .scripts import (
+    MOLECULE_TEMPLATES,
+    build_crystal_script,
     build_molecule_script,
+    build_supercell_script,
+    build_surface_slab_script,
+    castep_calculate_script,
     castep_energy_script,
+    forcite_dynamics_script,
     forcite_geometry_optimization_script,
+    get_molecule_template,
     import_export_script,
+    list_molecule_templates,
+    reflex_powder_diffraction_script,
     structure_summary_script,
     template_catalog,
     validate_materialscript,
@@ -25,158 +38,31 @@ mcp = FastMCP("material_studio_mcp")
 runner = MaterialStudioRunner()
 
 
-class ResponseFormat(str, Enum):
-    """Supported response formats."""
-
-    JSON = "json"
-    MARKDOWN = "markdown"
-
-
-class ForciteQuality(str, Enum):
-    """Common Forcite quality values."""
-
-    COARSE = "Coarse"
-    MEDIUM = "Medium"
-    FINE = "Fine"
-    ULTRA_FINE = "Ultra-fine"
-
-
-class ForciteConvergence(str, Enum):
-    """Common Forcite convergence values."""
-
-    COARSE = "Coarse"
-    MEDIUM = "Medium"
-    FINE = "Fine"
-    ULTRA_FINE = "Ultra-fine"
-
-
-class BondType(str, Enum):
-    """MaterialsScript bond types accepted by CreateBond."""
-
-    SINGLE = "Single"
-    AROMATIC = "Aromatic"
-    PARTIAL_DOUBLE = "Partial double"
-    DOUBLE = "Double"
-    TRIPLE = "Triple"
-
-
-class RunScriptInput(BaseModel):
-    """Input for running custom MaterialsScript Perl."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    script: str = Field(..., description="MaterialsScript Perl source code.", min_length=1, max_length=500_000)
-    args: list[str] = Field(default_factory=list, description="Command-line arguments passed to the Perl script.", max_length=100)
-    working_dir: str | None = Field(
-        default=None,
-        description="Optional base folder for the generated isolated job directory.",
-        max_length=500,
-    )
-    timeout_seconds: int | None = Field(default=None, description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600)
-    job_prefix: str = Field(default="custom", description="Prefix for the generated job directory.", min_length=1, max_length=50)
-    dry_run: bool = Field(default=False, description="If true, return the script and planned config without launching Materials Studio.")
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON, description="Return format.")
-
-
-class ValidateScriptInput(BaseModel):
-    """Input for MaterialsScript validation."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    script: str = Field(..., description="MaterialsScript Perl source code to check.", min_length=1, max_length=500_000)
-
-
-class ImportExportInput(BaseModel):
-    """Input for import/export conversion."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    source_file: str = Field(..., description="Structure file to import, for example D:\\models\\CHA.cif.", min_length=1, max_length=500)
-    output_file: str = Field(..., description="Target document path, for example D:\\models\\CHA.xsd.", min_length=1, max_length=500)
-    working_dir: str | None = Field(default=None, description="Optional base folder for the generated isolated job directory.", max_length=500)
-    timeout_seconds: int | None = Field(default=None, description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600)
-    dry_run: bool = Field(default=False, description="If true, return the generated Perl without launching Materials Studio.")
-
-
-class StructureSummaryInput(BaseModel):
-    """Input for structure summary."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    source_file: str = Field(..., description="Structure file to import and summarize.", min_length=1, max_length=500)
-    working_dir: str | None = Field(default=None, description="Optional base folder for the generated isolated job directory.", max_length=500)
-    timeout_seconds: int | None = Field(default=None, description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600)
-    dry_run: bool = Field(default=False, description="If true, return the generated Perl without launching Materials Studio.")
-
-
-class ForciteGeometryOptimizationInput(BaseModel):
-    """Input for Forcite geometry optimization."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    input_file: str = Field(..., description="Structure file to import, for example D:\\models\\zeolite.xsd.", min_length=1, max_length=500)
-    output_file: str | None = Field(default=None, description="Optional optimized structure export path.", max_length=500)
-    forcefield: str = Field(default="COMPASS", description="Forcite forcefield name, for example COMPASS or COMPASSII.", min_length=1, max_length=100)
-    quality: ForciteQuality = Field(default=ForciteQuality.MEDIUM, description="Forcite calculation quality.")
-    charge_assignment: str = Field(default="Forcefield assigned", description="Forcite charge assignment mode.", min_length=1, max_length=100)
-    max_iterations: int = Field(default=500, description="Maximum geometry optimization iterations.", ge=1, le=1_000_000)
-    convergence: ForciteConvergence = Field(default=ForciteConvergence.MEDIUM, description="Forcite convergence level.")
-    working_dir: str | None = Field(default=None, description="Optional base folder for the generated isolated job directory.", max_length=500)
-    timeout_seconds: int | None = Field(default=None, description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600)
-    dry_run: bool = Field(default=False, description="If true, return generated Perl without launching Materials Studio.")
-
-
-class MoleculeAtom(BaseModel):
-    """Atom specification for MaterialsScript molecule building."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    id: str = Field(..., description="Unique atom ID used by bonds, for example C1.", min_length=1, max_length=50)
-    element: str = Field(..., description="Element symbol, for example C, H, N, O.", min_length=1, max_length=3)
-    x: float = Field(..., description="X coordinate in Angstrom.")
-    y: float = Field(..., description="Y coordinate in Angstrom.")
-    z: float = Field(..., description="Z coordinate in Angstrom.")
-
-
-class MoleculeBond(BaseModel):
-    """Bond specification for MaterialsScript molecule building."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    atom1: str = Field(..., description="First atom ID.", min_length=1, max_length=50)
-    atom2: str = Field(..., description="Second atom ID.", min_length=1, max_length=50)
-    type: BondType = Field(default=BondType.SINGLE, description="MaterialsScript bond type.")
-
-
-class BuildMoleculeInput(BaseModel):
-    """Input for creating a molecule document with MaterialsScript."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    name: str = Field(default="Molecule", description="Document/molecule name.", min_length=1, max_length=120)
-    output_file: str = Field(..., description="Output .xsd path written by Materials Studio Export.", min_length=1, max_length=500)
-    atoms: list[MoleculeAtom] = Field(..., description="Atoms to create with Documents->New/CreateAtom.", min_length=1, max_length=500)
-    bonds: list[MoleculeBond] = Field(default_factory=list, description="Bonds to create with CreateBond.", max_length=800)
-    optimize: bool = Field(default=False, description="If true, run Forcite geometry optimization after building.")
-    forcefield: str | None = Field(default="COMPASS", description="Optional Forcite forcefield if optimize=true.", max_length=100)
-    quality: ForciteQuality = Field(default=ForciteQuality.MEDIUM, description="Optional Forcite quality if optimize=true.")
-    max_iterations: int = Field(default=500, description="Forcite max iterations if optimize=true.", ge=1, le=1_000_000)
-    working_dir: str | None = Field(default=None, description="Optional base folder for the generated isolated job directory.", max_length=500)
-    timeout_seconds: int | None = Field(default=None, description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600)
-    dry_run: bool = Field(default=False, description="If true, return generated Perl without launching Materials Studio.")
-
-
-class CastepEnergyInput(BaseModel):
-    """Input for CASTEP Energy script generation."""
-
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    input_file: str = Field(..., description="Structure file imported by the CASTEP Energy script.", min_length=1, max_length=500)
-    quality: str = Field(default="Medium", description="CASTEP quality setting.", min_length=1, max_length=100)
-    task: str = Field(default="Energy", description="CASTEP task name.", min_length=1, max_length=100)
-    functional: str = Field(default="PBE", description="Exchange-correlation functional setting.", min_length=1, max_length=100)
-    cutoff_energy_ev: int | None = Field(default=None, description="Optional cutoff energy in eV.", ge=1, le=100_000)
-    kpoint_separation: float | None = Field(default=None, description="Optional k-point separation.", gt=0, le=10)
+from .models import (
+    BondType,
+    BuildCrystalInput,
+    BuildMoleculeInput,
+    BuildSupercellInput,
+    BuildSurfaceSlabInput,
+    CastepCalculateInput,
+    CastepEnergyInput,
+    CastepQuality,
+    CastepTask,
+    CrystalAtom,
+    ForciteConvergence,
+    ForciteDynamicsInput,
+    ForciteEnsemble,
+    ForciteGeometryOptimizationInput,
+    ForciteQuality,
+    ImportExportInput,
+    MoleculeAtom,
+    MoleculeBond,
+    ReflexPowderDiffractionInput,
+    ResponseFormat,
+    RunScriptInput,
+    StructureSummaryInput,
+    ValidateScriptInput,
+)
 
 
 def _ok(result: dict[str, Any]) -> dict[str, Any]:
@@ -242,18 +128,36 @@ def _validate_molecule_graph(atoms: list[MoleculeAtom], bonds: list[MoleculeBond
 
 
 def _run_build_script(params: BuildMoleculeInput) -> dict[str, Any]:
-    _validate_molecule_graph(params.atoms, params.bonds)
+    atoms = params.atoms
+    bonds = params.bonds or []
+    name = params.name
+
+    if params.template:
+        tmpl = get_molecule_template(params.template)
+        if not tmpl:
+            available = ", ".join(MOLECULE_TEMPLATES.keys())
+            raise ValueError(f"Unknown molecule template '{params.template}'. Available: {available}")
+        if not atoms:
+            atoms = [MoleculeAtom(**a) for a in tmpl["atoms"]]
+            bonds = [MoleculeBond(**b) for b in tmpl.get("bonds", [])]
+            if name == "Molecule":
+                name = tmpl["name"]
+
+    if not atoms:
+        raise ValueError("Must provide either 'template' (e.g. 'water', 'benzene', 'tnt') or 'atoms' list.")
+
+    _validate_molecule_graph(atoms, bonds)
     script = build_molecule_script(
-        params.name,
+        name,
         params.output_file,
-        [atom.model_dump() for atom in params.atoms],
+        [atom.model_dump() for atom in atoms],
         [
-            {"atom1": bond.atom1, "atom2": bond.atom2, "type": bond.type.value}
-            for bond in params.bonds
+            {"atom1": bond.atom1, "atom2": bond.atom2, "type": bond.type.value if hasattr(bond.type, "value") else str(bond.type)}
+            for bond in bonds
         ],
         optimize=params.optimize,
         forcefield=params.forcefield,
-        quality=params.quality.value,
+        quality=params.quality.value if hasattr(params.quality, "value") else str(params.quality),
         max_iterations=params.max_iterations,
     )
     if params.dry_run:
@@ -371,6 +275,14 @@ def material_studio_run_script(
         int | None,
         Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
     ] = None,
+    num_cores: Annotated[
+        int | None,
+        Field(description="Parallel cores to allocate (-np).", ge=1, le=256),
+    ] = None,
+    project_mode: Annotated[
+        bool,
+        Field(description="Run script in Materials Studio project mode (-project)."),
+    ] = False,
     job_prefix: Annotated[
         str,
         Field(description="Prefix for the generated job directory.", min_length=1, max_length=50),
@@ -392,6 +304,8 @@ def material_studio_run_script(
         args (list[str] | None): optional command-line args.
         working_dir (str | None): optional job base directory.
         timeout_seconds (int | None): execution timeout.
+        num_cores (int | None): number of parallel cores (-np).
+        project_mode (bool): whether to run in project mode (-project).
         dry_run (bool): return script without execution.
 
     Returns:
@@ -403,6 +317,8 @@ def material_studio_run_script(
         args=args or [],
         working_dir=working_dir,
         timeout_seconds=timeout_seconds,
+        num_cores=num_cores,
+        project_mode=project_mode,
         job_prefix=job_prefix,
         dry_run=dry_run,
         response_format=response_format,
@@ -417,6 +333,8 @@ def material_studio_run_script(
             working_dir=params.working_dir,
             timeout_seconds=params.timeout_seconds,
             job_prefix=params.job_prefix,
+            num_cores=params.num_cores,
+            project_mode=params.project_mode,
         )
         return _format_run_result(result.to_dict(), params.response_format)
     except Exception as exc:
@@ -436,11 +354,11 @@ def material_studio_run_script(
 def material_studio_import_export(
     source_file: Annotated[
         str,
-        Field(description="Structure file to import, for example D:\\models\\CHA.cif.", min_length=1, max_length=500),
+        Field(description="Structure file to import, for example CHA.cif or ./models/CHA.cif.", min_length=1, max_length=500),
     ],
     output_file: Annotated[
         str,
-        Field(description="Target document path, for example D:\\models\\CHA.xsd.", min_length=1, max_length=500),
+        Field(description="Target document path, for example CHA.xsd or ./models/CHA.xsd.", min_length=1, max_length=500),
     ],
     working_dir: Annotated[
         str | None,
@@ -560,7 +478,7 @@ def material_studio_structure_summary(
 def material_studio_forcite_geometry_optimization(
     input_file: Annotated[
         str,
-        Field(description="Structure file to import, for example D:\\models\\zeolite.xsd.", min_length=1, max_length=500),
+        Field(description="Structure file to import, for example zeolite.xsd or ./models/zeolite.xsd.", min_length=1, max_length=500),
     ],
     output_file: Annotated[
         str | None,
@@ -583,6 +501,10 @@ def material_studio_forcite_geometry_optimization(
         ForciteConvergence,
         Field(description="Forcite convergence level."),
     ] = ForciteConvergence.MEDIUM,
+    num_cores: Annotated[
+        int | None,
+        Field(description="Parallel cores to allocate (-np).", ge=1, le=256),
+    ] = None,
     working_dir: Annotated[
         str | None,
         Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
@@ -604,6 +526,7 @@ def material_studio_forcite_geometry_optimization(
         forcefield (str): Forcite forcefield name.
         quality (ForciteQuality): calculation quality.
         max_iterations (int): maximum optimizer iterations.
+        num_cores (int | None): parallel cores to allocate (-np).
         dry_run (bool): return generated Perl without execution.
 
     Returns:
@@ -618,6 +541,7 @@ def material_studio_forcite_geometry_optimization(
         charge_assignment=charge_assignment,
         max_iterations=max_iterations,
         convergence=convergence,
+        num_cores=num_cores,
         working_dir=working_dir,
         timeout_seconds=timeout_seconds,
         dry_run=dry_run,
@@ -639,6 +563,7 @@ def material_studio_forcite_geometry_optimization(
             working_dir=params.working_dir,
             timeout_seconds=params.timeout_seconds,
             job_prefix="forcite_go",
+            num_cores=params.num_cores,
         )
         return _ok({"result": result.to_dict()})
     except Exception as exc:
@@ -661,12 +586,16 @@ def material_studio_build_molecule(
         Field(description="Output .xsd path written by Materials Studio Export.", min_length=1, max_length=500),
     ],
     atoms: Annotated[
-        list[MoleculeAtom],
-        Field(description="Atoms to create with CreateAtom.", min_length=1, max_length=500),
-    ],
+        list[MoleculeAtom] | None,
+        Field(description="Atoms to create with CreateAtom. Optional if template is provided.", max_length=500),
+    ] = None,
     bonds: Annotated[
         list[MoleculeBond] | None,
         Field(description="Bonds to create with CreateBond.", max_length=800),
+    ] = None,
+    template: Annotated[
+        str | None,
+        Field(description="Optional built-in molecule template name (water, methane, benzene, tnt, ethanol).", max_length=100),
     ] = None,
     name: Annotated[
         str,
@@ -705,11 +634,13 @@ def material_studio_build_molecule(
 
     Use this instead of hand-writing .xsd XML. The output is created by
     Materials Studio itself and exported through the official document API.
+    Can build from custom atoms/bonds or from predefined templates (water, methane, benzene, tnt, ethanol).
     """
 
     params = BuildMoleculeInput(
         name=name,
         output_file=output_file,
+        template=template,
         atoms=atoms,
         bonds=bonds or [],
         optimize=optimize,
@@ -760,57 +691,10 @@ def material_studio_build_tnt(
 ) -> dict[str, Any]:
     """Build 2,4,6-trinitrotoluene (TNT, C7H5N3O6) as an XSD document."""
 
-    atoms = [
-        MoleculeAtom(id="C1", element="C", x=1.400, y=0.000, z=0.000),
-        MoleculeAtom(id="C2", element="C", x=0.700, y=1.212, z=0.000),
-        MoleculeAtom(id="C3", element="C", x=-0.700, y=1.212, z=0.000),
-        MoleculeAtom(id="C4", element="C", x=-1.400, y=0.000, z=0.000),
-        MoleculeAtom(id="C5", element="C", x=-0.700, y=-1.212, z=0.000),
-        MoleculeAtom(id="C6", element="C", x=0.700, y=-1.212, z=0.000),
-        MoleculeAtom(id="C7", element="C", x=2.910, y=0.000, z=0.000),
-        MoleculeAtom(id="H1", element="H", x=3.550, y=0.630, z=0.000),
-        MoleculeAtom(id="H2", element="H", x=3.550, y=-0.315, z=0.546),
-        MoleculeAtom(id="H3", element="H", x=3.550, y=-0.315, z=-0.546),
-        MoleculeAtom(id="H4", element="H", x=-1.250, y=2.162, z=0.000),
-        MoleculeAtom(id="H5", element="H", x=-1.250, y=-2.162, z=0.000),
-        MoleculeAtom(id="N1", element="N", x=1.440, y=2.490, z=0.000),
-        MoleculeAtom(id="O1", element="O", x=1.990, y=3.250, z=0.350),
-        MoleculeAtom(id="O2", element="O", x=0.930, y=3.070, z=-0.350),
-        MoleculeAtom(id="N2", element="N", x=-2.870, y=0.000, z=0.000),
-        MoleculeAtom(id="O3", element="O", x=-3.610, y=-0.610, z=0.200),
-        MoleculeAtom(id="O4", element="O", x=-3.610, y=0.610, z=-0.200),
-        MoleculeAtom(id="N3", element="N", x=1.440, y=-2.490, z=0.000),
-        MoleculeAtom(id="O5", element="O", x=1.990, y=-3.250, z=-0.350),
-        MoleculeAtom(id="O6", element="O", x=0.930, y=-3.070, z=0.350),
-    ]
-    bonds = [
-        MoleculeBond(atom1="C1", atom2="C2", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C2", atom2="C3", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C3", atom2="C4", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C4", atom2="C5", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C5", atom2="C6", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C6", atom2="C1", type=BondType.AROMATIC),
-        MoleculeBond(atom1="C1", atom2="C7", type=BondType.SINGLE),
-        MoleculeBond(atom1="C7", atom2="H1", type=BondType.SINGLE),
-        MoleculeBond(atom1="C7", atom2="H2", type=BondType.SINGLE),
-        MoleculeBond(atom1="C7", atom2="H3", type=BondType.SINGLE),
-        MoleculeBond(atom1="C3", atom2="H4", type=BondType.SINGLE),
-        MoleculeBond(atom1="C5", atom2="H5", type=BondType.SINGLE),
-        MoleculeBond(atom1="C2", atom2="N1", type=BondType.SINGLE),
-        MoleculeBond(atom1="N1", atom2="O1", type=BondType.DOUBLE),
-        MoleculeBond(atom1="N1", atom2="O2", type=BondType.PARTIAL_DOUBLE),
-        MoleculeBond(atom1="C4", atom2="N2", type=BondType.SINGLE),
-        MoleculeBond(atom1="N2", atom2="O3", type=BondType.DOUBLE),
-        MoleculeBond(atom1="N2", atom2="O4", type=BondType.PARTIAL_DOUBLE),
-        MoleculeBond(atom1="C6", atom2="N3", type=BondType.SINGLE),
-        MoleculeBond(atom1="N3", atom2="O5", type=BondType.DOUBLE),
-        MoleculeBond(atom1="N3", atom2="O6", type=BondType.PARTIAL_DOUBLE),
-    ]
     params = BuildMoleculeInput(
         name="TNT_246_trinitrotoluene",
         output_file=output_file,
-        atoms=atoms,
-        bonds=bonds,
+        template="tnt",
         optimize=optimize,
         forcefield="COMPASS",
         quality=ForciteQuality.MEDIUM,
@@ -896,6 +780,716 @@ def material_studio_castep_energy_script(
         kpoint_separation=params.kpoint_separation,
     )
     return _ok({"script": script})
+
+
+@mcp.tool(
+    name="material_studio_list_molecule_templates",
+    annotations={
+        "title": "List built-in molecule templates",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_list_molecule_templates() -> dict[str, Any]:
+    """List all available predefined molecule templates (e.g. water, methane, benzene, tnt, ethanol)."""
+    return _ok({"templates": list_molecule_templates()})
+
+
+@mcp.tool(
+    name="material_studio_search_builtin_structures",
+    annotations={
+        "title": "Search Materials Studio built-in structures",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_search_builtin_structures(
+    query: Annotated[
+        str,
+        Field(description="Search term (case-insensitive filename/formula match, e.g. 'TiO2', 'Si', 'graphene', 'zeolite').", min_length=1, max_length=100),
+    ],
+    category: Annotated[
+        str | None,
+        Field(description="Optional category folder filter (e.g. 'metals', 'semiconductors', 'zeolites', 'ceramics').", max_length=100),
+    ] = None,
+    max_results: Annotated[
+        int,
+        Field(description="Maximum matching structures to return.", ge=1, le=200),
+    ] = 50,
+) -> dict[str, Any]:
+    """Search the Materials Studio built-in structure library (share/Structures)."""
+    base_dir = config.builtin_structures_path
+    if not base_dir or not base_dir.is_dir():
+        return _error(MaterialStudioError(f"Built-in structures directory not found or not configured: {base_dir}"))
+
+    search_root = (base_dir / category) if category else base_dir
+    if not search_root.is_dir():
+        return _error(MaterialStudioError(f"Category folder does not exist: {category}"))
+
+    query_lower = query.lower()
+    matches = []
+    extensions = {".msi", ".car", ".cell", ".xsd", ".cif", ".mol", ".pdb"}
+    for path in search_root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in extensions:
+            if query_lower in path.name.lower():
+                try:
+                    rel = path.relative_to(base_dir).as_posix()
+                except ValueError:
+                    rel = path.name
+                matches.append({
+                    "name": path.stem,
+                    "filename": path.name,
+                    "relative_path": rel,
+                    "absolute_path": str(path),
+                    "extension": path.suffix.lower(),
+                    "size_bytes": path.stat().st_size,
+                })
+                if len(matches) >= max_results:
+                    break
+
+    return _ok({
+        "query": query,
+        "category": category,
+        "structures_root": str(base_dir),
+        "total_matches": len(matches),
+        "matches": matches,
+    })
+
+
+@mcp.tool(
+    name="material_studio_load_builtin_structure",
+    annotations={
+        "title": "Load Materials Studio built-in structure",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_load_builtin_structure(
+    relative_path: Annotated[
+        str,
+        Field(description="Relative path within share/Structures (e.g. 'semiconductors/Si.msi') or absolute path.", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str,
+        Field(description="Destination file path where the structure will be copied/exported.", min_length=1, max_length=500),
+    ],
+    convert_to_xsd: Annotated[
+        bool,
+        Field(description="If true and format is not .xsd, convert to .xsd using Materials Studio document API."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated action/Perl without executing."),
+    ] = False,
+) -> dict[str, Any]:
+    """Load and copy/convert a structure from the Materials Studio built-in structure library."""
+    base_dir = config.builtin_structures_path
+    target = Path(relative_path)
+    if not target.is_absolute():
+        if not base_dir:
+            return _error(MaterialStudioError("Built-in structures directory is not configured."))
+        target = base_dir / relative_path
+
+    if not target.is_file():
+        return _error(MaterialStudioError(f"Built-in structure file not found: {target}"))
+
+    out_path = Path(output_file).expanduser().resolve()
+    if convert_to_xsd and target.suffix.lower() != ".xsd":
+        script = import_export_script(target, out_path)
+        if dry_run:
+            return _dry_run(script, {"source": str(target), "destination": str(out_path)})
+        try:
+            result = runner.run_script(script, job_prefix="load_structure")
+            return _ok({"source": str(target), "destination": str(out_path), "result": result.to_dict()})
+        except Exception as exc:
+            return _error(exc)
+    else:
+        if dry_run:
+            return _ok({"dry_run": True, "action": f"Copy {target} to {out_path}"})
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copyfile(target, out_path)
+            return _ok({"source": str(target), "destination": str(out_path), "copied": True})
+        except Exception as exc:
+            return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_build_crystal",
+    annotations={
+        "title": "Build a 3D periodic crystal",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_build_crystal(
+    output_file: Annotated[
+        str,
+        Field(description="Output .xsd path for the created crystal.", min_length=1, max_length=500),
+    ],
+    a: Annotated[
+        float,
+        Field(description="Lattice parameter a in Angstroms.", gt=0.1, le=1000.0),
+    ],
+    b: Annotated[
+        float,
+        Field(description="Lattice parameter b in Angstroms.", gt=0.1, le=1000.0),
+    ],
+    c: Annotated[
+        float,
+        Field(description="Lattice parameter c in Angstroms.", gt=0.1, le=1000.0),
+    ],
+    alpha: Annotated[
+        float,
+        Field(description="Lattice angle alpha in degrees.", gt=0.0, lt=180.0),
+    ] = 90.0,
+    beta: Annotated[
+        float,
+        Field(description="Lattice angle beta in degrees.", gt=0.0, lt=180.0),
+    ] = 90.0,
+    gamma: Annotated[
+        float,
+        Field(description="Lattice angle gamma in degrees.", gt=0.0, lt=180.0),
+    ] = 90.0,
+    fractional_atoms: Annotated[
+        list[CrystalAtom] | None,
+        Field(description="List of atoms with fractional coordinates (element, u, v, w)."),
+    ] = None,
+    space_group: Annotated[
+        str | None,
+        Field(description="Optional Hermann-Mauguin space group (e.g. 'F m -3 m', 'P 63/m m c', 'P 21/c').", max_length=50),
+    ] = None,
+    name: Annotated[
+        str,
+        Field(description="Crystal structure document name.", min_length=1, max_length=120),
+    ] = "Crystal",
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Build a periodic 3D crystal structure from lattice constants and fractional coordinates."""
+    params = BuildCrystalInput(
+        name=name,
+        output_file=output_file,
+        a=a,
+        b=b,
+        c=c,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+        fractional_atoms=fractional_atoms or [],
+        space_group=space_group,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    script = build_crystal_script(
+        name=params.name,
+        output_file=params.output_file,
+        a=params.a,
+        b=params.b,
+        c=params.c,
+        alpha=params.alpha,
+        beta=params.beta,
+        gamma=params.gamma,
+        fractional_atoms=[atom.model_dump() for atom in params.fractional_atoms],
+        space_group=params.space_group,
+    )
+    if params.dry_run:
+        return _dry_run(script)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            job_prefix="build_crystal",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_build_supercell",
+    annotations={
+        "title": "Build a crystal supercell",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_build_supercell(
+    source_file: Annotated[
+        str,
+        Field(description="Source crystal structure file (e.g. .xsd, .cif).", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str,
+        Field(description="Output .xsd path for the generated supercell.", min_length=1, max_length=500),
+    ],
+    u: Annotated[
+        int,
+        Field(description="Supercell multiple along A lattice vector.", ge=1, le=50),
+    ] = 1,
+    v: Annotated[
+        int,
+        Field(description="Supercell multiple along B lattice vector.", ge=1, le=50),
+    ] = 1,
+    w: Annotated[
+        int,
+        Field(description="Supercell multiple along C lattice vector.", ge=1, le=50),
+    ] = 1,
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Expand an existing periodic unit cell into a supercell (e.g. 2x2x2, 3x3x1)."""
+    params = BuildSupercellInput(
+        source_file=source_file,
+        output_file=output_file,
+        u=u,
+        v=v,
+        w=w,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    warnings = _path_warning(params.source_file, "Source file")
+    script = build_supercell_script(
+        params.source_file,
+        params.output_file,
+        params.u,
+        params.v,
+        params.w,
+    )
+    if params.dry_run:
+        return _dry_run(script, {"warnings": warnings} if warnings else None)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            job_prefix="build_supercell",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_build_surface_slab",
+    annotations={
+        "title": "Cleave a surface slab with vacuum",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_build_surface_slab(
+    source_file: Annotated[
+        str,
+        Field(description="Source 3D crystal structure file (e.g. .xsd, .cif).", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str,
+        Field(description="Output surface/slab .xsd path.", min_length=1, max_length=500),
+    ],
+    h: Annotated[
+        int,
+        Field(description="Miller index h of the cleave plane."),
+    ],
+    k: Annotated[
+        int,
+        Field(description="Miller index k of the cleave plane."),
+    ],
+    l: Annotated[
+        int,
+        Field(description="Miller index l of the cleave plane."),
+    ],
+    thickness_angstrom: Annotated[
+        float,
+        Field(description="Slab thickness in Angstroms.", gt=0.1, le=500.0),
+    ] = 10.0,
+    vacuum_angstrom: Annotated[
+        float,
+        Field(description="Vacuum buffer thickness in Angstroms (0 for 2D slab).", ge=0.0, le=500.0),
+    ] = 15.0,
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Cleave a crystal surface along Miller indices (h, k, l) and construct a vacuum slab."""
+    params = BuildSurfaceSlabInput(
+        source_file=source_file,
+        output_file=output_file,
+        h=h,
+        k=k,
+        l=l,
+        thickness_angstrom=thickness_angstrom,
+        vacuum_angstrom=vacuum_angstrom,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    warnings = _path_warning(params.source_file, "Source file")
+    script = build_surface_slab_script(
+        params.source_file,
+        params.output_file,
+        params.h,
+        params.k,
+        params.l,
+        thickness_angstrom=params.thickness_angstrom,
+        vacuum_angstrom=params.vacuum_angstrom,
+    )
+    if params.dry_run:
+        return _dry_run(script, {"warnings": warnings} if warnings else None)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            job_prefix="build_surface_slab",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_forcite_dynamics",
+    annotations={
+        "title": "Run Forcite Molecular Dynamics",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_forcite_dynamics(
+    input_file: Annotated[
+        str,
+        Field(description="Structure file imported into Materials Studio.", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str | None,
+        Field(description="Optional trajectory/final structure output .xsd path.", max_length=500),
+    ] = None,
+    ensemble: Annotated[
+        ForciteEnsemble,
+        Field(description="Thermodynamic ensemble (NVT, NPT, NVE, NPH)."),
+    ] = ForciteEnsemble.NVT,
+    temperature_k: Annotated[
+        float,
+        Field(description="Simulation temperature in Kelvin.", gt=0.0, le=10000.0),
+    ] = 298.0,
+    pressure_gpa: Annotated[
+        float | None,
+        Field(description="Pressure in GPa (for NPT/NPH ensembles).", ge=0.0, le=1000.0),
+    ] = None,
+    time_step_fs: Annotated[
+        float,
+        Field(description="Time step in femtoseconds.", gt=0.01, le=10.0),
+    ] = 1.0,
+    number_of_steps: Annotated[
+        int,
+        Field(description="Total integration steps (total_time = steps * time_step).", ge=10, le=100_000_000),
+    ] = 5000,
+    thermostat: Annotated[
+        str,
+        Field(description="Thermostat algorithm (Nose-Hoover, Berendsen, Andersen).", max_length=50),
+    ] = "Nose-Hoover",
+    forcefield: Annotated[
+        str,
+        Field(description="Forcefield name (e.g. COMPASS, Universal, Dreiding, cvff).", min_length=1, max_length=100),
+    ] = "COMPASS",
+    quality: Annotated[
+        ForciteQuality,
+        Field(description="Forcite calculation quality setting."),
+    ] = ForciteQuality.MEDIUM,
+    num_cores: Annotated[
+        int | None,
+        Field(description="Parallel cores to allocate (-np).", ge=1, le=256),
+    ] = None,
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Run a Forcite Classical Molecular Dynamics simulation."""
+    params = ForciteDynamicsInput(
+        input_file=input_file,
+        output_file=output_file,
+        ensemble=ensemble,
+        temperature_k=temperature_k,
+        pressure_gpa=pressure_gpa,
+        time_step_fs=time_step_fs,
+        number_of_steps=number_of_steps,
+        thermostat=thermostat,
+        forcefield=forcefield,
+        quality=quality,
+        num_cores=num_cores,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    warnings = _path_warning(params.input_file, "Input file")
+    script = forcite_dynamics_script(
+        params.input_file,
+        params.output_file,
+        ensemble=params.ensemble.value if hasattr(params.ensemble, "value") else str(params.ensemble),
+        temperature_k=params.temperature_k,
+        pressure_gpa=params.pressure_gpa,
+        time_step_fs=params.time_step_fs,
+        number_of_steps=params.number_of_steps,
+        thermostat=params.thermostat,
+        forcefield=params.forcefield,
+        quality=params.quality.value if hasattr(params.quality, "value") else str(params.quality),
+    )
+    if params.dry_run:
+        return _dry_run(script, {"warnings": warnings} if warnings else None)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            num_cores=params.num_cores,
+            job_prefix="forcite_dynamics",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_castep_calculate",
+    annotations={
+        "title": "Execute CASTEP DFT calculation",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_castep_calculate(
+    input_file: Annotated[
+        str,
+        Field(description="Structure file imported into CASTEP (e.g. .xsd, .cell, .cif).", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str | None,
+        Field(description="Optional output file path for calculated/relaxed structure.", max_length=500),
+    ] = None,
+    task: Annotated[
+        CastepTask,
+        Field(description="CASTEP task: Energy, GeometryOptimization, BandStructure."),
+    ] = CastepTask.ENERGY,
+    quality: Annotated[
+        CastepQuality,
+        Field(description="CASTEP calculation quality setting."),
+    ] = CastepQuality.MEDIUM,
+    functional: Annotated[
+        str,
+        Field(description="Exchange-correlation functional (PBE, LDA, PW91, RPBE, WC, PBEsol).", min_length=1, max_length=100),
+    ] = "PBE",
+    cutoff_energy_ev: Annotated[
+        int | None,
+        Field(description="Optional plane-wave cutoff energy in eV.", ge=1, le=100_000),
+    ] = None,
+    kpoint_separation: Annotated[
+        float | None,
+        Field(description="Optional k-point grid separation (1/Angstrom).", gt=0.0, le=10.0),
+    ] = None,
+    max_iterations: Annotated[
+        int,
+        Field(description="Maximum SCF or geometry optimization iterations.", ge=1, le=2000),
+    ] = 50,
+    num_cores: Annotated[
+        int | None,
+        Field(description="Parallel cores to allocate (-np).", ge=1, le=256),
+    ] = None,
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Execute a CASTEP First-Principles DFT calculation (Energy, GeometryOptimization, BandStructure)."""
+    params = CastepCalculateInput(
+        input_file=input_file,
+        output_file=output_file,
+        task=task,
+        quality=quality,
+        functional=functional,
+        cutoff_energy_ev=cutoff_energy_ev,
+        kpoint_separation=kpoint_separation,
+        max_iterations=max_iterations,
+        num_cores=num_cores,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    warnings = _path_warning(params.input_file, "Input file")
+    task_str = params.task.value if hasattr(params.task, "value") else str(params.task)
+    quality_str = params.quality.value if hasattr(params.quality, "value") else str(params.quality)
+    script = castep_calculate_script(
+        params.input_file,
+        params.output_file,
+        task=task_str,
+        quality=quality_str,
+        functional=params.functional,
+        cutoff_energy_ev=params.cutoff_energy_ev,
+        kpoint_separation=params.kpoint_separation,
+        max_iterations=params.max_iterations,
+    )
+    if params.dry_run:
+        return _dry_run(script, {"warnings": warnings} if warnings else None)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            num_cores=params.num_cores,
+            job_prefix=f"castep_{task_str.lower()}",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="material_studio_reflex_powder_diffraction",
+    annotations={
+        "title": "Reflex XRD Powder Diffraction simulation",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def material_studio_reflex_powder_diffraction(
+    source_file: Annotated[
+        str,
+        Field(description="Crystal structure file (e.g. .xsd, .cif).", min_length=1, max_length=500),
+    ],
+    output_file: Annotated[
+        str | None,
+        Field(description="Optional reflections table export path (.std, .txt).", max_length=500),
+    ] = None,
+    two_theta_min: Annotated[
+        float,
+        Field(description="Minimum 2-theta angle in degrees.", ge=0.0, lt=180.0),
+    ] = 5.0,
+    two_theta_max: Annotated[
+        float,
+        Field(description="Maximum 2-theta angle in degrees.", gt=0.0, le=180.0),
+    ] = 60.0,
+    step_size: Annotated[
+        float,
+        Field(description="2-theta step size in degrees.", gt=0.0001, le=5.0),
+    ] = 0.02,
+    radiation: Annotated[
+        str,
+        Field(description="X-ray radiation source ('Cu Ka', 'Mo Ka', 'Fe Ka', etc.).", max_length=50),
+    ] = "Cu Ka",
+    working_dir: Annotated[
+        str | None,
+        Field(description="Optional base folder for the generated isolated job directory.", max_length=500),
+    ] = None,
+    timeout_seconds: Annotated[
+        int | None,
+        Field(description="Execution timeout in seconds.", ge=1, le=7 * 24 * 3600),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(description="If true, return generated Perl without launching Materials Studio."),
+    ] = False,
+) -> dict[str, Any]:
+    """Simulate X-ray Powder Diffraction (XRD) using Reflex module."""
+    params = ReflexPowderDiffractionInput(
+        source_file=source_file,
+        output_file=output_file,
+        two_theta_min=two_theta_min,
+        two_theta_max=two_theta_max,
+        step_size=step_size,
+        radiation=radiation,
+        working_dir=working_dir,
+        timeout_seconds=timeout_seconds,
+        dry_run=dry_run,
+    )
+    warnings = _path_warning(params.source_file, "Source file")
+    script = reflex_powder_diffraction_script(
+        params.source_file,
+        params.output_file,
+        two_theta_min=params.two_theta_min,
+        two_theta_max=params.two_theta_max,
+        step_size=params.step_size,
+        radiation=params.radiation,
+    )
+    if params.dry_run:
+        return _dry_run(script, {"warnings": warnings} if warnings else None)
+    try:
+        result = runner.run_script(
+            script,
+            working_dir=params.working_dir,
+            timeout_seconds=params.timeout_seconds,
+            job_prefix="reflex_xrd",
+        )
+        return _ok({"result": result.to_dict()})
+    except Exception as exc:
+        return _error(exc)
 
 
 def main() -> None:
